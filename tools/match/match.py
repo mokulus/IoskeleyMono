@@ -54,65 +54,111 @@ ASCII = "".join(chr(c) for c in range(0x21, 0x7F))
 # ---------------------------------------------------------------- reference
 
 
-def cmd_ref(args: argparse.Namespace) -> None:
-    """Extract the reference fonts from the datasheet into OTF files."""
-    import pymupdf
+# Datasheet page 4 samples "Aa" in every cut: 12 weight rows; per width an upright and
+# an oblique column. Ioskeley builds only some of them; the rest are skipped.
+CUT_PAGE = 3
+CUT_WEIGHTS = ["Thin", "ExtraLight", "Light", "SemiLight", "Retina", "Regular", "Book",
+               "Medium", "SemiBold", "Bold", "ExtraBold", "Black"]
+CUT_COLUMNS = [(w, s) for w in ("Normal", "SemiCondensed", "Condensed", "ExtraCondensed", "UltraCondensed")
+               for s in ("Upright", "Italic")]
+IOSKELEY_WEIGHTS = {"Thin", "ExtraLight", "Light", "SemiLight", "Regular", "Medium", "SemiBold",
+                    "Bold", "ExtraBold", "Black"}
+IOSKELEY_WIDTHS = {"Normal", "SemiCondensed"}
+
+
+def style_name(weight: str, width: str, slope: str) -> str:
+    """Iosevka's file suffix: width, weight and slope, each omitted when default."""
+    name = ("" if width == "Normal" else width) + ("" if weight == "Regular" else weight) + \
+        ("Italic" if slope == "Italic" else "")
+    return name or "Regular"
+
+
+CUT_STYLES = [style_name(wt, wd, sl) for wt in CUT_WEIGHTS if wt in IOSKELEY_WEIGHTS
+              for wd, sl in CUT_COLUMNS if wd in IOSKELEY_WIDTHS]
+
+
+def _write_ref(buf: bytes, style: str, out: Path) -> None:
     from fontTools import agl
     from fontTools.cffLib import CFFFontSet
     from fontTools.fontBuilder import FontBuilder
     from fontTools.misc.psCharStrings import T2WidthExtractor
     from fontTools.ttLib import newTable
 
+    cff = CFFFontSet()
+    cff.decompile(io.BytesIO(buf), None)
+    top = cff[0]
+    order = top.charset
+    priv = top.Private
+    metrics, cmap = {}, {}
+    for gname in order:
+        cs = top.CharStrings[gname]
+        ex = T2WidthExtractor(getattr(priv, "Subrs", []), cs.globalSubrs, priv.nominalWidthX, priv.defaultWidthX)
+        ex.execute(cs)
+        bp = BoundsPen(None)
+        cs.draw(bp)
+        metrics[gname] = (round(ex.width), bp.bounds[0] if bp.bounds else 0)
+        uni = agl.toUnicode(gname)
+        if len(uni) == 1:
+            cmap[ord(uni)] = gname
+
+    fb = FontBuilder(1000, isTTF=False)
+    fb.setupGlyphOrder(order)
+    fb.setupCharacterMap(cmap)
+    fb.setupHorizontalMetrics(metrics)
+    fb.setupHorizontalHeader(ascent=1000, descent=-300)
+    fb.setupNameTable({"familyName": "TX02 Reference", "styleName": style})
+    fb.setupOS2(sTypoAscender=1000, sTypoDescender=-300, usWinAscent=1000, usWinDescent=300)
+    fb.setupPost(isFixedPitch=1)
+    fb.setupMaxp()
+    table = newTable("CFF ")
+    table.cff = cff
+    fb.font["CFF "] = table
+    fb.font.save(out)
+    print(f"{out}  glyphs={len(order)}  mapped={len(cmap)}")
+
+
+def cmd_ref(args: argparse.Namespace) -> None:
+    """Extract the reference fonts from the datasheet into OTF files."""
+    import re
+
+    import pymupdf
+
     doc = pymupdf.open(args.pdf)
+    REF_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Full specimens: the largest subset of each named face.
     best: dict[str, bytes] = {}
     for page in range(len(doc)):
         for xref, _ext, _typ, name, *_ in doc.get_page_fonts(page):
             base = name.split("+", 1)[-1]
-            if base not in REF_STYLES:
-                continue
-            buf = doc.extract_font(xref)[3]
-            if len(buf) > len(best.get(base, b"")):
-                best[base] = buf
-
-    REF_DIR.mkdir(parents=True, exist_ok=True)
+            if base in REF_STYLES:
+                buf = doc.extract_font(xref)[3]
+                if len(buf) > len(best.get(base, b"")):
+                    best[base] = buf
     for base, buf in best.items():
-        style = REF_STYLES[base]
-        cff = CFFFontSet()
-        cff.decompile(io.BytesIO(buf), None)
-        top = cff[0]
-        order = top.charset
-        priv = top.Private
-        metrics, cmap = {}, {}
-        glyphs = top.CharStrings
-        for gname in order:
-            cs = glyphs[gname]
-            ex = T2WidthExtractor(
-                getattr(priv, "Subrs", []), cs.globalSubrs, priv.nominalWidthX, priv.defaultWidthX
-            )
-            ex.execute(cs)
-            bp = BoundsPen(None)
-            cs.draw(bp)
-            metrics[gname] = (ex.width, bp.bounds[0] if bp.bounds else 0)
-            uni = agl.toUnicode(gname)
-            if len(uni) == 1:
-                cmap[ord(uni)] = gname
+        _write_ref(buf, REF_STYLES[base], REF_DIR / f"TX02-{REF_STYLES[base]}.otf")
 
-        fb = FontBuilder(1000, isTTF=False)
-        fb.setupGlyphOrder(order)
-        fb.setupCharacterMap(cmap)
-        fb.setupHorizontalMetrics(metrics)
-        fb.setupHorizontalHeader(ascent=1000, descent=-300)
-        family = "TX02 Reference"
-        fb.setupNameTable({"familyName": family, "styleName": style})
-        fb.setupOS2(sTypoAscender=1000, sTypoDescender=-300, usWinAscent=1000, usWinDescent=300)
-        fb.setupPost(isFixedPitch=1)
-        fb.setupMaxp()
-        table = newTable("CFF ")
-        table.cff = cff
-        fb.font["CFF "] = table
-        out = REF_DIR / f"TX02-{style}.otf"
-        fb.font.save(out)
-        print(f"{out}  glyphs={len(order)}  mapped={len(cmap)}")
+    # Per-cut "Aa" samples. Each text-show operator's font comes from the content stream;
+    # its index matches the text trace's seqno.
+    page = doc[CUT_PAGE]
+    res_to_xref = {f[4]: f[0] for f in page.get_fonts()}
+    fonts_in_order, current = [], None
+    for m in re.finditer(r"/(\S+)\s+[\d.]+\s+Tf|(Tj|TJ|')(?=\s)", page.read_contents().decode("latin-1")):
+        if m.group(1):
+            current = m.group(1)
+        else:
+            fonts_in_order.append(current)
+    spans = sorted((s for s in page.get_texttrace() if s["font"] == "TX02-Regular"),
+                   key=lambda s: (round(s["bbox"][1]), s["bbox"][0]))
+    if len(spans) != len(CUT_WEIGHTS) * len(CUT_COLUMNS):
+        sys.exit(f"unexpected page {CUT_PAGE + 1} layout: {len(spans)} samples")
+    for i, span in enumerate(spans):
+        weight, (width, slope) = CUT_WEIGHTS[i // len(CUT_COLUMNS)], CUT_COLUMNS[i % len(CUT_COLUMNS)]
+        style = style_name(weight, width, slope)
+        if style not in CUT_STYLES or style in REF_STYLES.values():
+            continue  # not built by Ioskeley, or covered by a full specimen
+        buf = doc.extract_font(res_to_xref[fonts_in_order[span["seqno"]]])[3]
+        _write_ref(buf, style, REF_DIR / f"TX02-{style}.otf")
 
 
 # ---------------------------------------------------------------- rendering
@@ -216,7 +262,7 @@ def candidate_path(args) -> Path:
     return Path(args.font) if args.font else _font_file(args.ws, args.style)
 
 
-def score_font(style: str, font_path: Path, spec: str = "ascii") -> dict:
+def score_font(style: str, font_path: Path, spec: str = "all") -> dict:
     ref = Font(REF_DIR / f"TX02-{style}.otf")
     cand = Font(font_path)
     chars = glyph_set(spec, ref)
@@ -400,8 +446,11 @@ def _run(cmd: list[str], cwd: Path | None = None) -> None:
 
 
 STYLES = ["Regular", "Bold", "Italic", "BoldItalic"]
+# Current focus: Normal width, Regular weight. Pass --styles to include others.
+DEFAULT_STYLES = ["Regular"]
 
-# Scoped builds contain printable ASCII and the glyphs it depends on, with no OpenType
+# Scoped builds contain the code-point ranges listed in Iosevka's verdafile (Latin,
+# punctuation, arrows, math, box drawing) and the glyphs they depend on, with no OpenType
 # features (about 1 s per style). `match --full` builds what a release would contain.
 FULL = False
 
@@ -493,9 +542,13 @@ def cmd_verify(args) -> None:
         scoped = score_font(style, _font_file(args.ws, style))["glyphs"]
         FULL = True
         complete = score_font(style, _font_file(args.ws, style))["glyphs"]
-        diff = {ch: (scoped.get(ch, {}).get("score"), complete[ch]["score"])
-                for ch in complete if scoped.get(ch, {}).get("score") != complete[ch]["score"]}
-        print(f"[{style}] {len(complete)} glyphs, {len(diff)} differ" + "".join(f"\n  {ch!r}: scoped {a} full {b}" for ch, (a, b) in diff.items()))
+        common = [ch for ch in complete if ch in scoped]
+        diff = {ch: (scoped[ch]["score"], complete[ch]["score"])
+                for ch in common if scoped[ch]["score"] != complete[ch]["score"]}
+        absent = "".join(ch for ch in complete if ch not in scoped)
+        print(f"[{style}] {len(common)} glyphs compared, {len(diff)} differ"
+              + (f"; not in scoped builds: {absent}" if absent else "")
+              + "".join(f"\n  {ch!r}: scoped {a} full {b}" for ch, (a, b) in diff.items()))
         bad += diff
     print("VERIFY PASS" if not bad else "VERIFY FAIL")
     sys.exit(1 if bad else 0)
@@ -528,8 +581,8 @@ def cmd_ws_new(args) -> None:
         _run(["cp", "-Rcp", str(src), str(ios / src.relative_to(main))])
     shutil.rmtree(_runs(args.name), ignore_errors=True)
     if not args.no_base:
-        build(args.name, STYLES, quiet=True)
-        for style in STYLES:
+        build(args.name, DEFAULT_STYLES, quiet=True)
+        for style in DEFAULT_STYLES:
             _write_json(_runs(args.name) / "base" / f"{style}.json", score_font(style, _font_file(args.name, style)))
         print(f"base scores: {_runs(args.name) / 'base'}")
     print(f"workspace ready: {dest}")
@@ -550,6 +603,8 @@ def cmd_ws_rm(args) -> None:
         subprocess.run(["jj", "abandon", f"{args.name}@ & empty() & description(exact:'')"], cwd=ROOT / repo, check=False)
         subprocess.run(["jj", "workspace", "forget", args.name], cwd=ROOT / repo, check=False)
     shutil.rmtree(dest, ignore_errors=True)
+    for worker in (WT / ".workers").glob(f"{args.name}-*"):
+        shutil.rmtree(worker, ignore_errors=True)
     print(f"removed {dest}")
 
 
@@ -687,22 +742,62 @@ def objective(ws: str | None, styles: list[str], spec: str) -> tuple[float, dict
     return float(np.mean(list(per.values()))), per
 
 
+def _sync_worker(ws: str | None, i: int) -> str:
+    """Plain-file copy of a workspace used only for building candidates; never a jj checkout.
+    Created as an APFS clone (cheap) without jj/git metadata; later syncs copy only changed
+    sources and leave the worker's own build caches and outputs alone."""
+    wid = f".workers/{ws or 'main'}-{i}"
+    src, dst = _ws_root(ws), WT / wid
+    if not dst.exists():
+        dst.mkdir(parents=True)
+        for repo in ("Iosevka", "IoskeleyMono"):
+            subprocess.run(["cp", "-Rcp", str(src / repo), str(dst / repo)], check=True)
+            for meta in (dst / repo / ".jj", dst / repo / ".git"):
+                if meta.is_dir() and not meta.is_symlink():
+                    shutil.rmtree(meta)
+                elif meta.exists() or meta.is_symlink():
+                    meta.unlink()
+        return wid
+    for repo in ("Iosevka", "IoskeleyMono"):
+        excludes = [f"--exclude=/{d}" for d in (".jj", ".git", "dist", ".build", "node_modules")]
+        subprocess.run(["rsync", "-a", "--delete", *excludes, f"{src / repo}/", f"{dst / repo}/"], check=True)
+    return wid
+
+
+def _evaluate(wid: str, plan_text: str, field: str, value: str, styles: list[str], spec: str, full: bool):
+    """Build and score one candidate in a worker. Runs in its own process (FreeType is not thread-safe)."""
+    global FULL
+    FULL = full
+    plan = _plan_file(wid)
+    plan.write_text(plan_text)
+    if value != "<current>":
+        set_plan_value(plan, field, value)
+    build(wid, styles, quiet=True)
+    return objective(wid, styles, spec)
+
+
 def cmd_tune(args) -> None:
-    """Try values for one global field; keep the best with --apply."""
+    """Try values for one global field in parallel worker copies; keep the best with --apply."""
+    from concurrent.futures import ProcessPoolExecutor
+
     plan = _plan_file(args.ws)
     original = plan.read_text()
+    values = ["<current>", *args.values.split(";")]
+    jobs = max(1, min(args.jobs, len(values)))
+    workers = [_sync_worker(args.ws, i) for i in range(jobs)]
+    results = []
+    with ProcessPoolExecutor(jobs) as pool:
+        for start in range(0, len(values), jobs):  # one value per worker at a time
+            wave = values[start:start + jobs]
+            futures = [pool.submit(_evaluate, wid, original, args.field, v, args.styles, args.glyphs, FULL)
+                       for wid, v in zip(workers, wave)]
+            results += [f.result() for f in futures]
     rows = []
-    for value in ["<current>", *args.values.split(";")]:
-        plan.write_text(original)
-        if value != "<current>":
-            set_plan_value(plan, args.field, value)
-        build(args.ws, args.styles, quiet=True)
-        total, per = objective(args.ws, args.styles, args.glyphs)
+    for value, (total, per) in zip(values, results):
         rows.append((total, value, per))
         print(f"{args.field} = {value:<40} {total:.4f}  " + " ".join(f"{s}={v:.4f}" for s, v in per.items()), flush=True)
     current = rows[0]
     best = max(rows, key=lambda r: r[0])
-    plan.write_text(original)
     if args.apply and best is not current and best[0] > current[0] + args.min_gain:
         set_plan_value(plan, args.field, best[1])
         print(f"applied {args.field} = {best[1]} ({current[0]:.4f} -> {best[0]:.4f})")
@@ -720,19 +815,20 @@ def main() -> None:
     sub = p.add_subparsers(required=True)
 
     def cand_args(sp):
-        sp.add_argument("--style", default="Regular", choices=sorted(set(REF_STYLES.values())))
+        sp.add_argument("--style", default="Regular", choices=sorted(set(STYLES + CUT_STYLES)))
         sp.add_argument("--ws", help="workspace name under wt/ (default: main checkout)")
         sp.add_argument("--font", help="explicit candidate font path")
-        sp.add_argument("--glyphs", default="ascii", help="'ascii', 'all', or literal characters")
+        sp.add_argument("--glyphs", default="all", help="'all' reference glyphs, 'ascii', or literal characters")
 
     sp = sub.add_parser("tune", help="try values for one global plan field across styles")
     sp.add_argument("--ws", required=True, help="never tune in the main checkout")
     sp.add_argument("field", help="metricOverride field (all plans) or dotted table path ending in a key")
     sp.add_argument("values", help="';'-separated candidate values (TOML literals or bare strings)")
-    sp.add_argument("--styles", nargs="+", default=STYLES)
-    sp.add_argument("--glyphs", default="ascii")
+    sp.add_argument("--styles", nargs="+", default=DEFAULT_STYLES)
+    sp.add_argument("--glyphs", default="all")
     sp.add_argument("--apply", action="store_true")
     sp.add_argument("--min-gain", type=float, default=0.0005)
+    sp.add_argument("--jobs", type=int, default=6, help="candidate values evaluated in parallel")
     sp.set_defaults(func=cmd_tune)
 
     sp = sub.add_parser("ref", help="extract reference fonts from the datasheet")
@@ -748,7 +844,7 @@ def main() -> None:
     sp.add_argument("--ws")
     sp.add_argument("--target", help="characters being worked on; each must improve")
     sp.add_argument("--tol", type=float, default=0.003, help="allowed drop for non-target glyphs")
-    sp.add_argument("--styles", nargs="+", default=STYLES)
+    sp.add_argument("--styles", nargs="+", default=DEFAULT_STYLES)
     sp.add_argument("--rebase", action="store_true", help="record this build as the base instead of gating")
     sp.set_defaults(func=cmd_check)
 
@@ -758,7 +854,7 @@ def main() -> None:
 
     sp = sub.add_parser("verify", help="check that scoped and full builds score identically")
     sp.add_argument("--ws")
-    sp.add_argument("--styles", nargs="+", default=STYLES)
+    sp.add_argument("--styles", nargs="+", default=DEFAULT_STYLES)
     sp.set_defaults(func=cmd_verify)
 
     sp = sub.add_parser("sweep", help="try every option of variant primes")
