@@ -1,6 +1,6 @@
 [buildPlans.IoskeleyMono]
 family = "Ioskeley Mono"
-spacing = "normal"
+spacing = "fontconfig-mono"
 serifs = "sans"
 noCvSs = true
 exportGlyphNames = true
@@ -237,7 +237,7 @@ overshoot = -13
 
 [buildPlans.IoskeleyMonoNL]
 family = "Ioskeley Mono NL"
-spacing = "normal"
+spacing = "fontconfig-mono"
 serifs = "sans"
 noCvSs = true
 noLigation = true
@@ -333,7 +333,7 @@ overshoot = -13
 
 [buildPlans.IoskeleyMonoWeb]
 family = "Ioskeley Mono"
-spacing = "normal"
+spacing = "fontconfig-mono"
 serifs = "sans"
 noCvSs = true
 exportGlyphNames = false

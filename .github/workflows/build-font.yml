@@ -223,7 +223,7 @@ jobs:
         run: |
           # Full-coverage web build, packaged from the base plan's WOFF2
           # output. Same filenames as the subset web zip, but with Greek,
-          # Cyrillic, long arrows, and rare math glyphs retained. No extra
+          # Cyrillic, and rare math glyphs retained. No extra
           # build plan — this is the plan IoskeleyMono already produces.
           #
           # The plan name matches, so no renaming is needed here.
@@ -275,7 +275,7 @@ jobs:
             `IoskeleyMono-Web.zip` is trimmed to Latin, punctuation, arrows,
             math operators and box drawing (≈94 KB per face) — the right choice
             for page loads. `IoskeleyMono-Web-Full.zip` carries the complete
-            character set (Greek, Cyrillic, long arrows, rare math) at the cost
+            character set (Greek, Cyrillic, rare math) at the cost
             of size, for sites that need those glyphs.
 
             Each desktop zip has `Hinted/` and `Unhinted/` per width — Hinted for

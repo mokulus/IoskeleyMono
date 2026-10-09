@@ -65,7 +65,7 @@ Not sure which file to choose? Start with **[`IoskeleyMono.zip`](https://github.
 > [!TIP]
 > **Using a terminal?** Choose a `Term` package. Its spacing keeps arrows and box-drawing glyphs inside their cells.
 >
-> **Building a website?** Start with `IoskeleyMono-Web.zip`. Choose `Web-Full` only when you need Greek, Cyrillic, long arrows, or less common mathematical symbols. Both web archives use the same filenames, so switching between them does not require new `@font-face` rules.
+> **Building a website?** Start with `IoskeleyMono-Web.zip`. Choose `Web-Full` only when you need Greek, Cyrillic, or less common mathematical symbols. Both web archives use the same filenames, so switching between them does not require new `@font-face` rules.
 
 ### Choose Your Width
 
