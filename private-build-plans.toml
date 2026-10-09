@@ -101,7 +101,7 @@ lig-single-arrow-bar = "without-notch"
 capital-thorn = "asymmetric-serifless"
 partial-derivative = "straight-bar"
 lower-eth = "straight-bar"
-ellipsis-density = "dense"
+ellipsis-density = "normal"
 
 # ============================================================
 # WEIGHTS
