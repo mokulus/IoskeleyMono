@@ -128,7 +128,7 @@ menu = 350
 css = 350
 
 [buildPlans.IoskeleyMono.weights.Regular]
-shape = 400
+shape = 410
 menu = 400
 css = 400
 
@@ -189,8 +189,8 @@ menu = "upright"
 css = "normal"
 
 [buildPlans.IoskeleyMono.slopes.Italic]
-angle = 11.8
-shape = "italic"
+angle = 16.5
+shape = "oblique"
 menu = "italic"
 css = "italic"
 
@@ -199,27 +199,30 @@ css = "italic"
 # ============================================================
 
 [buildPlans.IoskeleyMono.metricOverride]
-xHeight = 520
-cap = 690
-ascender = 740
-sb = 85
+xHeight = 'blend(weight, [400, 518], [700, 528])'
+cap = 680
+ascender = 734
+sb = 'blend(weight, [400, 86], [700, 78])'
 
-accentWidth = 182
-accentClearance = 76
+accentWidth = 204
+accentClearance = 84
 accentHeight = 162
 accentStackOffset = 208
 
 leading = 1250
 parenSize = 860
 dotSize = 'blend(weight, [100, 110], [400, 125], [900, 150])'
-periodSize = 140
+periodSize = 'blend(weight, [400, 140], [700, 160])'
 
 essRatio = 1.03
 essRatioUpper = 1.03
 essRatioLower = 1.03
 essRatioQuestion = 1.03
 archDepth = 152
-smallArchDepth = 157
+smallArchDepth = 175
+slopeCenter = 0
+symbolMid = 307
+overshoot = -13
 
 # ============================================================
 # NL VARIANT (No Ligatures)
@@ -244,27 +247,30 @@ slopes.inherits  = "buildPlans.IoskeleyMono"
 inherits = "buildPlans.IoskeleyMono"
 
 [buildPlans.IoskeleyMonoNL.metricOverride]
-xHeight = 520
-cap = 690
-ascender = 740
-sb = 85
+xHeight = 'blend(weight, [400, 518], [700, 528])'
+cap = 680
+ascender = 734
+sb = 'blend(weight, [400, 86], [700, 78])'
 
-accentWidth = 182
-accentClearance = 76
+accentWidth = 204
+accentClearance = 84
 accentHeight = 162
 accentStackOffset = 208
 
 leading = 1250
 parenSize = 860
 dotSize = 'blend(weight, [100, 110], [400, 125], [900, 150])'
-periodSize = 140
+periodSize = 'blend(weight, [400, 140], [700, 160])'
 
 essRatio = 1.03
 essRatioUpper = 1.03
 essRatioLower = 1.03
 essRatioQuestion = 1.03
 archDepth = 152
-smallArchDepth = 157
+smallArchDepth = 175
+slopeCenter = 0
+symbolMid = 307
+overshoot = -13
 
 # ============================================================
 # TERM VARIANT
@@ -288,27 +294,30 @@ slopes.inherits  = "buildPlans.IoskeleyMono"
 inherits = "buildPlans.IoskeleyMono"
 
 [buildPlans.IoskeleyMonoTerm.metricOverride]
-xHeight = 520
-cap = 690
-ascender = 740
-sb = 85
+xHeight = 'blend(weight, [400, 518], [700, 528])'
+cap = 680
+ascender = 734
+sb = 'blend(weight, [400, 86], [700, 78])'
 
-accentWidth = 182
-accentClearance = 76
+accentWidth = 204
+accentClearance = 84
 accentHeight = 162
 accentStackOffset = 208
 
 leading = 1250
 parenSize = 860
 dotSize = 'blend(weight, [100, 110], [400, 125], [900, 150])'
-periodSize = 140
+periodSize = 'blend(weight, [400, 140], [700, 160])'
 
 essRatio = 1.03
 essRatioUpper = 1.03
 essRatioLower = 1.03
 essRatioQuestion = 1.03
 archDepth = 152
-smallArchDepth = 157
+smallArchDepth = 175
+slopeCenter = 0
+symbolMid = 307
+overshoot = -13
 # ============================================================
 # WEB VARIANT
 # Same design, trimmed character set. The full build carries
@@ -348,24 +357,27 @@ ranges = [
 ]
 
 [buildPlans.IoskeleyMonoWeb.metricOverride]
-xHeight = 520
-cap = 690
-ascender = 740
-sb = 85
+xHeight = 'blend(weight, [400, 518], [700, 528])'
+cap = 680
+ascender = 734
+sb = 'blend(weight, [400, 86], [700, 78])'
 
-accentWidth = 182
-accentClearance = 76
+accentWidth = 204
+accentClearance = 84
 accentHeight = 162
 accentStackOffset = 208
 
 leading = 1250
 parenSize = 860
 dotSize = 'blend(weight, [100, 110], [400, 125], [900, 150])'
-periodSize = 140
+periodSize = 'blend(weight, [400, 140], [700, 160])'
 
 essRatio = 1.03
 essRatioUpper = 1.03
 essRatioLower = 1.03
 essRatioQuestion = 1.03
 archDepth = 152
-smallArchDepth = 157
+smallArchDepth = 175
+slopeCenter = 0
+symbolMid = 307
+overshoot = -13
