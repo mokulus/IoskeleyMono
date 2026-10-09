@@ -100,9 +100,8 @@ SemiCondensed/
 ## At a Glance
 
 - **40 static styles:** 10 weights × 2 widths × upright and italic.
-- **Distinctive glyph choices:** dotted zero, single-storey `g`, open `6` and `9`, two-circle `8`, flat-arc parentheses, a raised underscore, and square punctuation dots.
+- **Distinctive glyph choices:** slashed zero, single-storey `g`, open `6` and `9`, two-circle `8`, flat-arc parentheses, a raised underscore, and square punctuation dots.
 - **Programming ligatures:** enabled in the standard, Term, and web families, with dedicated NL builds when ligatures must stay off.
-- **Optional slashed zero:** enable the OpenType `zero` feature in applications that support it.
 - **Purpose-built packages:** regular desktop, terminal, Nerd Font, no-ligature, and web variants are produced by the release workflow.
 
 ## Design
@@ -244,7 +243,6 @@ Ioskeley Mono includes OpenType features that compatible applications can enable
 
 | Feature | Effect |
 |---|---|
-| `zero` | Uses a slashed zero instead of the default dotted zero |
 | `calt` | Enables contextual programming ligatures. On by default where supported |
 | `dlig` | Enables discretionary ligatures |
 | `onum` | Uses old-style figures |
@@ -252,22 +250,22 @@ Ioskeley Mono includes OpenType features that compatible applications can enable
 
 ```jsonc
 // VS Code / Cursor
-"editor.fontLigatures": "'calt', 'zero'"
+"editor.fontLigatures": "'calt', 'onum'"
 ```
 
 ```ini
 # Ghostty
-font-feature = zero
+font-feature = onum
 ```
 
 ```conf
 # Kitty
-font_features IoskeleyMonoTerm +zero
+font_features IoskeleyMonoTerm +onum
 ```
 
 ```css
 /* CSS */
-font-feature-settings: "zero";
+font-feature-settings: "onum";
 ```
 
 ## Build from Source

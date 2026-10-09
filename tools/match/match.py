@@ -499,8 +499,18 @@ def _check_plan(path: Path) -> None:
 
 
 def build(ws: str | None, styles: list[str], quiet: bool = False) -> None:
-    """One verda session for all styles: each font compiles in its own process, in parallel."""
-    _check_plan(_plan_file(ws))
+    """One verda session for all styles: each font compiles in its own process, in parallel.
+
+    verda propagates a changed build plan only within the session that first notices it, so
+    a scoped build after a plan edit leaves the full font looking up to date (and the other
+    way round). Fonts older than the plan are therefore deleted before building."""
+    plan = _plan_file(ws)
+    _check_plan(plan)
+    plan_mtime = plan.stat().st_mtime
+    for style in styles:
+        font = _font_file(ws, style)
+        if font.exists() and font.stat().st_mtime < plan_mtime:
+            font.unlink()
     ios = _ws_root(ws) / "Iosevka"
     entry = "single" if FULL else "scoped"
     cmd = ["node", "node_modules/verda/bin/verda", "-f", "verdafile.mjs", *(f"{entry}::{PLAN}-{s}" for s in styles)]
