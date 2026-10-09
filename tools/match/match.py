@@ -984,6 +984,63 @@ def cmd_tune(args) -> None:
     build(args.ws, args.styles, quiet=True)
 
 
+def _evaluate_code(wid: str, rel: str, text: str, style: str, full: bool) -> dict:
+    """Write one candidate source file into a worker, build, score all glyphs (own process)."""
+    global FULL
+    FULL = full
+    (WT / wid / "Iosevka" / rel).write_text(text)
+    try:
+        build(wid, [style], quiet=True)
+    except SystemExit as e:
+        lines = str(e).splitlines()
+        first = next((ln for ln in lines if "Error" in ln and " at " not in ln), lines[-1] if lines else "")
+        return {"error": first.strip()[:300]}
+    return score_font(style, _font_file(wid, style))
+
+
+def cmd_try(args) -> None:
+    """Evaluate code alternatives in parallel: replace --old in --file with each ';;'-separated
+    --new text, build in worker copies, and compare against the workspace base. Edits nothing
+    in the workspace; apply the winner by hand, then run `check`."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    src = _ws_root(args.ws) / "Iosevka" / args.file
+    original = src.read_text()
+    if original.count(args.old) != 1:
+        sys.exit(f"--old must occur exactly once in {args.file} (found {original.count(args.old)})")
+    candidates = args.new.split(";;")
+    base = json.loads((_runs(args.ws) / "base" / f"{args.style}.json").read_text())["glyphs"]
+    jobs = max(1, min(args.jobs, len(candidates)))
+    workers = [_sync_worker(args.ws, i) for i in range(jobs)]
+    results = []
+    with ProcessPoolExecutor(jobs) as pool:
+        for start in range(0, len(candidates), jobs):
+            wave = candidates[start:start + jobs]
+            futures = [pool.submit(_evaluate_code, wid, args.file, original.replace(args.old, new), args.style, FULL)
+                       for wid, new in zip(workers, wave)]
+            results += [f.result() for f in futures]
+    for w in workers:  # leave workers matching the workspace
+        (WT / w / "Iosevka" / args.file).write_text(original)
+    targets = [c for c in dict.fromkeys(args.target or "") if c in base]
+    print(f"{'candidate':<44} {'targets':>8} {'total':>8}  worst other")
+    for new, res in zip(candidates, results):
+        # Show only the part that differs from the other candidates.
+        import os
+
+        pre = len(os.path.commonprefix(candidates)) if len(candidates) > 1 else 0
+        suf = len(os.path.commonprefix([c[::-1] for c in candidates])) if len(candidates) > 1 else 0
+        label = new[pre:len(new) - suf].strip().replace("\n", " ")[:44] or new.strip()[:44]
+        if "error" in res:
+            print(f"{label:<44} build failed: {res['error']}")
+            continue
+        g = res["glyphs"]
+        deltas = {c: g[c]["score"] - base[c]["score"] for c in base if c in g}
+        tgt = sum(deltas[c] for c in targets) / max(1, len(targets))
+        others = sorted((d, c) for c, d in deltas.items() if c not in targets)
+        worst = f"{others[0][1]!r}{others[0][0]:+.4f}" if others and others[0][0] < 0 else "none"
+        print(f"{label:<44} {tgt:+8.4f} {sum(deltas.values()):+8.4f}  {worst}")
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -1077,6 +1134,16 @@ def main() -> None:
     sp = sub.add_parser("measure", help="vertical metrics, stems and side bearings")
     cand_args(sp)
     sp.set_defaults(func=cmd_measure)
+
+    sp = sub.add_parser("try", help="evaluate glyph-code alternatives in parallel worker copies")
+    sp.add_argument("--ws", required=True)
+    sp.add_argument("--file", required=True, help="path under Iosevka/, e.g. packages/font-glyphs/src/marks/above.ptl")
+    sp.add_argument("--old", required=True, help="exact text to replace (must occur once)")
+    sp.add_argument("--new", required=True, help="';;'-separated replacements")
+    sp.add_argument("--target", help="characters the change is for")
+    sp.add_argument("--style", default="Regular", choices=STYLES)
+    sp.add_argument("--jobs", type=int, default=8)
+    sp.set_defaults(func=cmd_try)
 
     sp = sub.add_parser("coupling", help="group reference glyphs by the Iosevka glyph blocks that draw them")
     sp.add_argument("--ws")
