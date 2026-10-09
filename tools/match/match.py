@@ -259,7 +259,12 @@ def _label(ch: str) -> str:
 
 
 def candidate_path(args) -> Path:
-    return Path(args.font) if args.font else _font_file(args.ws, args.style)
+    """The workspace font for args.style, rebuilt first so images and scores always
+    reflect the current sources (a no-op build takes about a second)."""
+    if args.font:
+        return Path(args.font)
+    build(args.ws, [args.style], quiet=True)
+    return _font_file(args.ws, args.style)
 
 
 def score_font(style: str, font_path: Path, spec: str = "all") -> dict:
@@ -316,23 +321,32 @@ def gate(base: dict, new: dict, targets: str, tol: float, show: float = 0.002) -
     return not regressions, [deltas[ch] for ch in tset], sum(deltas.values())
 
 
-def verdict(results: list[tuple[bool, list[float], float]], targets: str | None) -> bool:
-    """Pass when no style regresses and the work improved: every target present
-    in any style went up, or, without targets, the total score went up."""
+def verdict(results: list[tuple[bool, list[float], float]], targets: str | None, tol: float) -> bool:
+    """Pass when no non-target glyph regresses and the work improved. With targets: their
+    mean went up and none dropped more than tol (so one of a pair may lose a pixel while
+    the pair gains). Without targets: the total score went up."""
     clean = all(r[0] for r in results)
     target_deltas = [d for r in results for d in r[1]]
+    total = sum(r[2] for r in results)
     if targets:
-        improved = bool(target_deltas) and all(d > 0 for d in target_deltas)
+        improved = bool(target_deltas) and sum(target_deltas) > 0 and min(target_deltas) >= -tol
     else:
-        improved = sum(r[2] for r in results) > 0
+        improved = total > 0
     ok = clean and improved
-    print("GATE PASS" if ok else "GATE FAIL")
+    if ok:
+        print("GATE PASS")
+    elif all(d == 0 for d in target_deltas) and total == 0:
+        print("GATE FAIL (no change: the build is identical to the base)")
+    elif not clean:
+        print("GATE FAIL (other glyphs regressed)")
+    else:
+        print("GATE FAIL (targets did not improve)")
     return ok
 
 
 def cmd_diff(args) -> None:
     r = gate(json.loads(Path(args.base).read_text()), json.loads(Path(args.new).read_text()), args.target, args.tol, args.show)
-    sys.exit(0 if verdict([r], args.target) else 1)
+    sys.exit(0 if verdict([r], args.target, args.tol) else 1)
 
 
 def cmd_show(args) -> None:
@@ -519,7 +533,7 @@ def cmd_check(args) -> None:
         results.append(gate(json.loads(base_path.read_text()), new, args.target, args.tol))
     if not results:
         return
-    sys.exit(0 if verdict(results, args.target) else 1)
+    sys.exit(0 if verdict(results, args.target, args.tol) else 1)
 
 
 def cmd_accept(args) -> None:

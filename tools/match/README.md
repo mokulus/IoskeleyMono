@@ -117,11 +117,21 @@ each run); `--jobs` sets how many.
 3. Make one change: a variant in `IoskeleyMono/private-build-plans.toml`, or the glyph code
    under `Iosevka/packages/font-glyphs/src/`. Prefer parameters of the glyph's own block
    over shared helpers. If a shared helper must change, the gate checks the side effects.
-4. `match check --ws <name> --target '<chars>'`.
-   - PASS: `match accept --ws <name>`, then commit in each repo you changed
+4. `match check --ws <name> --target '<chars>'`. It passes when the targets' scores rise
+   together (one may drop by up to `--tol` while the group gains) and no other glyph drops
+   more than `--tol`.
+   - PASS: look at `match show` again. Keep the change only if the glyph's structure
+     matches Berkeley's: never add parts Berkeley's glyph lacks (serifs, spurs, tails,
+     crossbars) or remove parts it has, even when the score rises. The score rewards
+     overlapping ink, and a wrong part can fill area where a right part is missing.
+     Then `match accept --ws <name>` and commit in each repo you changed
      (`jj commit -m "<glyph>: <what changed>"`).
-   - FAIL: undo with `jj restore` and try something else.
+   - FAIL: undo with `jj restore` and try something else. `show` and `score` rebuild first,
+     so their output always matches the current files.
 5. Repeat until the score stops improving. Report the final scores and the commit list.
+
+Glyph code is often shared beyond the scored glyphs (for example Cyrillic letters reuse Latin
+helpers). List any unscored glyphs a change also moves.
 
 Glyphs that share drawing code (`()`, `[]`, `{}`, `<>`, `,;`, `:;`, `'"`, `mnhu`,
 `bdpq`) belong in the same task.
