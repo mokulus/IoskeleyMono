@@ -401,8 +401,8 @@ def _run(cmd: list[str], cwd: Path | None = None) -> None:
 
 STYLES = ["Regular", "Bold", "Italic", "BoldItalic"]
 
-# Fast builds skip Iosevka's derived glyphs (about half the build time). ASCII and
-# Latin letters are unaffected; `match --full` builds what a release would contain.
+# Scoped builds contain printable ASCII and the glyphs it depends on, with no OpenType
+# features (about 1 s per style). `match --full` builds what a release would contain.
 FULL = False
 
 
@@ -415,7 +415,7 @@ def _plan_file(ws: str | None) -> Path:
 
 
 def _font_file(ws: str | None, style: str) -> Path:
-    kind = "TTF-Unhinted" if FULL else "TTF-Fast"
+    kind = "TTF-Unhinted" if FULL else "TTF-Scoped"
     return _ws_root(ws) / "Iosevka" / "dist" / PLAN / kind / f"{PLAN}-{style}.ttf"
 
 
@@ -439,7 +439,7 @@ def build(ws: str | None, styles: list[str], quiet: bool = False) -> None:
     """One verda session for all styles: each font compiles in its own process, in parallel."""
     _check_plan(_plan_file(ws))
     ios = _ws_root(ws) / "Iosevka"
-    entry = "single" if FULL else "fast"
+    entry = "single" if FULL else "scoped"
     cmd = ["node", "node_modules/verda/bin/verda", "-f", "verdafile.mjs", *(f"{entry}::{PLAN}-{s}" for s in styles)]
     if quiet:
         r = subprocess.run(cmd, cwd=ios, capture_output=True, text=True)
@@ -479,6 +479,26 @@ def cmd_accept(args) -> None:
     for f in sorted(last.glob("*.json")):
         shutil.copy(f, _runs(args.ws) / "base" / f.name)
         print(f"base <- {f}")
+
+
+def cmd_verify(args) -> None:
+    """Build scoped and full fonts from the same sources; every scored glyph must match."""
+    global FULL
+    bad = []
+    for full in (False, True):
+        FULL = full
+        build(args.ws, args.styles, quiet=True)
+    for style in args.styles:
+        FULL = False
+        scoped = score_font(style, _font_file(args.ws, style))["glyphs"]
+        FULL = True
+        complete = score_font(style, _font_file(args.ws, style))["glyphs"]
+        diff = {ch: (scoped.get(ch, {}).get("score"), complete[ch]["score"])
+                for ch in complete if scoped.get(ch, {}).get("score") != complete[ch]["score"]}
+        print(f"[{style}] {len(complete)} glyphs, {len(diff)} differ" + "".join(f"\n  {ch!r}: scoped {a} full {b}" for ch, (a, b) in diff.items()))
+        bad += diff
+    print("VERIFY PASS" if not bad else "VERIFY FAIL")
+    sys.exit(1 if bad else 0)
 
 
 def cmd_ws_new(args) -> None:
@@ -606,12 +626,83 @@ def cmd_sweep(args) -> None:
     build(args.ws, [style], quiet=True)
 
 
+# ---------------------------------------------------------------- global parameter tuning
+
+
+def _toml_literal(value: str) -> str:
+    try:
+        float(value)
+        return value
+    except ValueError:
+        return value if value[:1] in "'\"" else json.dumps(value)
+
+
+def set_plan_value(path: Path, field: str, value: str | None) -> None:
+    """Set `field` in the plan text. A bare name is a metricOverride field, set in every plan;
+    a dotted path such as buildPlans.IoskeleyMono.slopes.Italic.angle names one table key.
+    None removes the key."""
+    lines = path.read_text().split("\n")
+    if "." in field:
+        table, key = field.rsplit(".", 1)
+        headers = [f"[{table}]"]
+    else:
+        key = field
+        headers = [ln for ln in lines if ln.startswith("[buildPlans.") and ln.endswith(".metricOverride]")]
+    for header in headers:
+        start = lines.index(header)
+        end = start + 1
+        while end < len(lines) and not lines[end].startswith("["):
+            end += 1
+        idx = next((i for i in range(start + 1, end) if lines[i].split("=")[0].strip() == key), None)
+        if value is None:
+            if idx is not None:
+                del lines[idx]
+            continue
+        line = f"{key} = {_toml_literal(value)}"
+        if idx is not None:
+            lines[idx] = line
+        else:
+            last = max(i for i in range(start, end) if lines[i].strip() and not lines[i].startswith("#"))
+            lines.insert(last + 1, line)
+    path.write_text("\n".join(lines))
+
+
+def objective(ws: str | None, styles: list[str], spec: str) -> tuple[float, dict[str, float]]:
+    """Mean of per-style mean scores, so each style weighs the same."""
+    per = {s: score_font(s, _font_file(ws, s), spec)["summary"]["mean_score"] for s in styles}
+    return float(np.mean(list(per.values()))), per
+
+
+def cmd_tune(args) -> None:
+    """Try values for one global field; keep the best with --apply."""
+    plan = _plan_file(args.ws)
+    original = plan.read_text()
+    rows = []
+    for value in ["<current>", *args.values.split(";")]:
+        plan.write_text(original)
+        if value != "<current>":
+            set_plan_value(plan, args.field, value)
+        build(args.ws, args.styles, quiet=True)
+        total, per = objective(args.ws, args.styles, args.glyphs)
+        rows.append((total, value, per))
+        print(f"{args.field} = {value:<40} {total:.4f}  " + " ".join(f"{s}={v:.4f}" for s, v in per.items()), flush=True)
+    current = rows[0]
+    best = max(rows, key=lambda r: r[0])
+    plan.write_text(original)
+    if args.apply and best is not current and best[0] > current[0] + args.min_gain:
+        set_plan_value(plan, args.field, best[1])
+        print(f"applied {args.field} = {best[1]} ({current[0]:.4f} -> {best[0]:.4f})")
+    else:
+        print(f"kept current ({current[0]:.4f}); best {best[1]} ({best[0]:.4f})")
+    build(args.ws, args.styles, quiet=True)
+
+
 # ---------------------------------------------------------------- CLI
 
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="match", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--full", action="store_true", help="build/score complete fonts instead of fast iteration builds")
+    p.add_argument("--full", action="store_true", help="build/score complete fonts instead of scoped ASCII builds")
     sub = p.add_subparsers(required=True)
 
     def cand_args(sp):
@@ -619,6 +710,16 @@ def main() -> None:
         sp.add_argument("--ws", help="workspace name under wt/ (default: main checkout)")
         sp.add_argument("--font", help="explicit candidate font path")
         sp.add_argument("--glyphs", default="ascii", help="'ascii', 'all', or literal characters")
+
+    sp = sub.add_parser("tune", help="try values for one global plan field across styles")
+    sp.add_argument("--ws", required=True, help="never tune in the main checkout")
+    sp.add_argument("field", help="metricOverride field (all plans) or dotted table path ending in a key")
+    sp.add_argument("values", help="';'-separated candidate values (TOML literals or bare strings)")
+    sp.add_argument("--styles", nargs="+", default=STYLES)
+    sp.add_argument("--glyphs", default="ascii")
+    sp.add_argument("--apply", action="store_true")
+    sp.add_argument("--min-gain", type=float, default=0.0005)
+    sp.set_defaults(func=cmd_tune)
 
     sp = sub.add_parser("ref", help="extract reference fonts from the datasheet")
     sp.add_argument("--pdf", default=str(ROOT / "TX-02-datasheet.pdf"))
@@ -640,6 +741,11 @@ def main() -> None:
     sp = sub.add_parser("accept", help="promote the last check to the workspace base")
     sp.add_argument("--ws")
     sp.set_defaults(func=cmd_accept)
+
+    sp = sub.add_parser("verify", help="check that scoped and full builds score identically")
+    sp.add_argument("--ws")
+    sp.add_argument("--styles", nargs="+", default=STYLES)
+    sp.set_defaults(func=cmd_verify)
 
     sp = sub.add_parser("sweep", help="try every option of variant primes")
     sp.add_argument("--ws", required=True, help="never sweep in the main checkout")

@@ -70,7 +70,9 @@ drop more than `--tol` (default 0.003). Without `--target`, the total must impro
 | Command | Use |
 |---|---|
 | `match ws-new NAME` | jj workspaces of both repos at `@`, warm caches, build + score the base (~8 s) |
-| `match check --ws NAME --target 'ab'` | build all four styles in parallel, score, gate against the workspace base (~5 s) |
+| `match check --ws NAME --target 'ab'` | build all four styles in parallel, score, gate against the workspace base (~1–3 s) |
+| `match verify --ws NAME` | build scoped and full fonts and confirm every scored glyph matches (~10 s) |
+| `match tune --ws NAME FIELD 'v1;v2' --apply` | try values for a global field (a `metricOverride` name, or a dotted table path such as `buildPlans.IoskeleyMono.slopes.Italic.angle`) |
 | `match accept --ws NAME` | make the last check the new base after a passing step |
 | `match show --ws NAME --glyphs 'ab' --out DIR` | large overlay PNGs: black both, red reference only, blue candidate only |
 | `match sheet --ws NAME --out FILE.png` | contact sheet of every glyph with its score |
@@ -81,19 +83,24 @@ drop more than `--tol` (default 0.003). Without `--target`, the total must impro
 
 ### Build modes
 
-By default `match` builds `fast::` targets (`dist/IoskeleyMono/TTF-Fast/`). They skip
-Iosevka's derived glyphs (math-styled letters, enclosures, superscripts, `©®™Ĳĳ`), which
-halves the compile. ASCII and Latin letters are built from the same code, and fast
-and full builds score the same on them. `match --full <command>` builds and scores
-the complete fonts (`single::` targets, `TTF-Unhinted/`); use it before integrating.
+By default `match` builds `scoped::` targets (`dist/IoskeleyMono/TTF-Scoped/`): printable
+ASCII and only the Iosevka glyph blocks it depends on (about 100 of the full font's
+11,600 glyphs), with no OpenType features. The first build after a code or variant
+change runs everything once and records the dependency closure in
+`.build/TTF-Scoped/`; later builds reuse it until the glyph code, the variant selection or
+the style's shape changes. If a scoped run misses a target glyph or fails, it falls back
+to a full run and records the closure again.
+
+`match --full <command>` builds and scores the complete fonts (`single::` targets,
+`TTF-Unhinted/`), including accented Latin. Run `match verify` before integrating
+glyph-code changes.
 
 ### Where the time goes
 
-Iosevka compiles each font in one single-threaded Node process; one style takes about
-3 s fast or 5–6 s full, mostly evaluating every glyph's code and solving spiro curves.
-The geometry cache in `.build/cache` skips the outline boolean operations for glyphs
-that did not change. Parallelism comes from building styles side by side (one verda
-session) and from separate workspaces.
+Iosevka compiles each font in one single-threaded Node process. A full style takes 5–6 s
+(about 30 s after a global change, which invalidates the geometry cache for every
+glyph); a scoped style takes about 1 s, mostly process start-up and parameter loading.
+Styles build side by side in one verda session, and workspaces run in parallel.
 
 ## Agent loop (one glyph or glyph group)
 
