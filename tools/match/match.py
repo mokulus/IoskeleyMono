@@ -502,10 +502,19 @@ def cmd_verify(args) -> None:
 
 
 def cmd_ws_new(args) -> None:
-    """Create jj workspaces of both repos under wt/<name> with a warm build cache."""
+    """Create jj workspaces of both repos under wt/<name> with a warm build cache.
+
+    Workspaces start from a committed revision (default @-), never from the main
+    checkout's working-copy commit: every edit there rewrites that commit, which makes
+    child workspaces stale, and `jj workspace update-stale` overwrites pending edits."""
     dest = WT / args.name
     if dest.exists():
         sys.exit(f"{dest} already exists")
+    for repo in ("Iosevka", "IoskeleyMono"):
+        dirty = subprocess.run(["jj", "diff", "--summary", "-r", "@"], cwd=ROOT / repo,
+                               capture_output=True, text=True, check=True).stdout.strip()
+        if dirty and args.rev == "@-":
+            sys.exit(f"{ROOT / repo} has uncommitted changes; commit them (jj commit) first:\n{dirty}")
     dest.mkdir(parents=True)
     for repo in ("Iosevka", "IoskeleyMono"):
         _run(["jj", "workspace", "add", "--name", args.name, "-r", args.rev, str(dest / repo)], cwd=ROOT / repo)
@@ -528,10 +537,15 @@ def cmd_ws_new(args) -> None:
 
 def cmd_ws_rm(args) -> None:
     dest = WT / args.name
+    # Snapshot both repos first so uncommitted edits become part of <name>@ and survive.
     for repo in ("Iosevka", "IoskeleyMono"):
-        # Snapshot first so uncommitted edits become part of <name>@ and survive the delete.
         if (dest / repo).exists():
-            subprocess.run(["jj", "status"], cwd=dest / repo, check=False, capture_output=True)
+            r = subprocess.run(["jj", "status"], cwd=dest / repo, capture_output=True, text=True)
+            if r.returncode:
+                sys.exit(f"not removing {dest}: `jj status` failed in {repo} ({r.stderr.strip()}).\n"
+                         "Do not run `jj workspace update-stale` there: it overwrites pending edits. "
+                         "Copy the changed files out first.")
+    for repo in ("Iosevka", "IoskeleyMono"):
         # Drop the working-copy commit only if it holds nothing; other work stays in the repo.
         subprocess.run(["jj", "abandon", f"{args.name}@ & empty() & description(exact:'')"], cwd=ROOT / repo, check=False)
         subprocess.run(["jj", "workspace", "forget", args.name], cwd=ROOT / repo, check=False)
@@ -792,7 +806,7 @@ def main() -> None:
 
     sp = sub.add_parser("ws-new", help="create per-agent workspaces wt/<name>")
     sp.add_argument("name")
-    sp.add_argument("--rev", default="@", help="base revision in both repos")
+    sp.add_argument("--rev", default="@-", help="committed base revision in both repos (default @-)")
     sp.add_argument("--no-base", action="store_true", help="skip building and scoring the base")
     sp.set_defaults(func=cmd_ws_new)
 

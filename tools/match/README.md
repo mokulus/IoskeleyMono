@@ -119,6 +119,11 @@ Styles build side by side in one verda session, and workspaces run in parallel.
 Glyphs that share drawing code (`()`, `[]`, `{}`, `<>`, `,;`, `:;`, `'"`, `mnhu`,
 `bdpq`) belong in the same task.
 
+If jj reports "The working copy is stale", stop. Do not run `jj workspace update-stale`:
+it replaces uncommitted files with the rewritten commit's contents. Copy your changed
+files out first. Workspaces go stale only when someone rewrites the commits they sit on,
+so integrate a workspace's commits only after its agent has finished.
+
 ## Integrating parallel work
 
 Each workspace's commits sit on the revision it started from. From the main checkouts:
