@@ -1,0 +1,2 @@
+#!/bin/sh
+exec uv run --quiet --project "$(dirname "$0")" match "$@"
