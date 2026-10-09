@@ -46,8 +46,12 @@ match check --rebase         # build the four styles, record runs/main/base
 
 | Style | Reference glyphs |
 |---|---|
-| Regular | all printable ASCII plus Latin-1/Latin Extended, arrows, box drawing (335 mapped) |
+| Regular | printable ASCII, Latin-1, Latin Extended, punctuation, currency, arrows, math, box drawing (335 mapped) |
 | Bold, Italic (Berkeley's Oblique), BoldItalic | `(),.5ABEFGIMNORTWabcdefghiklmnopqrstuvwxy` |
+| Every other Ioskeley weight and width (`Thin` … `Black`, `SemiCondensed*`, their italics) | `A` and `a` from the datasheet's cut table (page 4) |
+
+Commands default to the Regular style and to every reference glyph (`--glyphs all`).
+Pass `--styles`/`--style` for the others.
 
 ## Score
 
@@ -69,10 +73,10 @@ drop more than `--tol` (default 0.003). Without `--target`, the total must impro
 
 | Command | Use |
 |---|---|
-| `match ws-new NAME` | jj workspaces of both repos at `@`, warm caches, build + score the base (~8 s) |
-| `match check --ws NAME --target 'ab'` | build all four styles in parallel, score, gate against the workspace base (~1–3 s) |
+| `match ws-new NAME` | jj workspaces of both repos at the committed `@-`, warm caches, build + score the base (~8 s) |
+| `match check --ws NAME --target 'ab'` | build, score, gate against the workspace base (~2–3 s for Regular) |
 | `match verify --ws NAME` | build scoped and full fonts and confirm every scored glyph matches (~10 s) |
-| `match tune --ws NAME FIELD 'v1;v2' --apply` | try values for a global field (a `metricOverride` name, or a dotted table path such as `buildPlans.IoskeleyMono.slopes.Italic.angle`) |
+| `match tune --ws NAME FIELD 'v1;v2' --apply` | try values for a global field in parallel worker copies (a `metricOverride` name, or a dotted table path such as `buildPlans.IoskeleyMono.slopes.Italic.angle`); negative values go after `--` |
 | `match accept --ws NAME` | make the last check the new base after a passing step |
 | `match show --ws NAME --glyphs 'ab' --out DIR` | large overlay PNGs: black both, red reference only, blue candidate only |
 | `match sheet --ws NAME --out FILE.png` | contact sheet of every glyph with its score |
@@ -83,24 +87,27 @@ drop more than `--tol` (default 0.003). Without `--target`, the total must impro
 
 ### Build modes
 
-By default `match` builds `scoped::` targets (`dist/IoskeleyMono/TTF-Scoped/`): printable
-ASCII and only the Iosevka glyph blocks it depends on (about 100 of the full font's
-11,600 glyphs), with no OpenType features. The first build after a code or variant
-change runs everything once and records the dependency closure in
-`.build/TTF-Scoped/`; later builds reuse it until the glyph code, the variant selection or
-the style's shape changes. If a scoped run misses a target glyph or fails, it falls back
-to a full run and records the closure again.
+By default `match` builds `scoped::` targets (`dist/IoskeleyMono/TTF-Scoped/`): the
+code-point ranges in Iosevka's `verdafile.mjs` (`SCOPED_RANGES`: Latin, punctuation,
+currency, arrows, math, box drawing) and only the glyph blocks they depend on, with
+accented letters composed and no OpenType features. Missing from scoped builds:
+`©®™Ĳĳ`, which come from Iosevka's derived-glyph modules. The first build after a glyph-code
+or variant change runs everything once and records the dependency closure in
+`.build/TTF-Scoped/`; later builds reuse it while the glyph code, the variants and the
+slope kind are unchanged (numeric weight, width and slant do not invalidate it). If a
+scoped run misses a recorded code point or fails, it falls back to a full run.
 
 `match --full <command>` builds and scores the complete fonts (`single::` targets,
-`TTF-Unhinted/`), including accented Latin. Run `match verify` before integrating
-glyph-code changes.
+`TTF-Unhinted/`). Run `match verify` before integrating glyph-code changes.
 
 ### Where the time goes
 
 Iosevka compiles each font in one single-threaded Node process. A full style takes 5–6 s
 (about 30 s after a global change, which invalidates the geometry cache for every
-glyph); a scoped style takes about 1 s, mostly process start-up and parameter loading.
-Styles build side by side in one verda session, and workspaces run in parallel.
+glyph); a scoped style takes about 2 s. Styles build side by side in one verda session.
+`tune` evaluates candidate values at the same time in worker copies
+(`wt/.workers/<workspace>-N`: APFS clones without jj metadata, synced with rsync before
+each run); `--jobs` sets how many.
 
 ## Agent loop (one glyph or glyph group)
 
@@ -121,18 +128,23 @@ Glyphs that share drawing code (`()`, `[]`, `{}`, `<>`, `,;`, `:;`, `'"`, `mnhu`
 
 If jj reports "The working copy is stale", stop. Do not run `jj workspace update-stale`:
 it replaces uncommitted files with the rewritten commit's contents. Copy your changed
-files out first. Workspaces go stale only when someone rewrites the commits they sit on,
-so integrate a workspace's commits only after its agent has finished.
+files out first. Workspaces go stale only when someone rewrites the commits they sit on:
+while workspaces exist, do not `jj squash`, `jj describe` or rebase the commits they
+started from, and integrate a workspace only after its agent has finished.
 
-## Integrating parallel work
+## Integrating a finished workspace
 
-Each workspace's commits sit on the revision it started from. From the main checkouts:
+Run this for each repo (`Iosevka`, `IoskeleyMono`) the workspace changed:
 
 ```sh
-jj rebase -s 'roots(<base>..<name>@-)' -d @-   # per workspace, in each repo
-match check --target ''                       # confirm the combined result, then accept
-match ws-rm <name>
+cd ~/ioskeley/wt/<name>/<repo> && jj commit -m "<what changed>"   # leaves an empty working copy
+match ws-rm <name>                                                 # clean, so nothing is lost
+cd ~/ioskeley/<repo>
+jj commit -m "<pending main-checkout work>"   # only if `jj st` shows changes
+jj rebase -r '<first>::<last>' -d @-          # the workspace's commits, onto main's latest
+jj new <last>                                 # continue on top of them
+match verify && match check --rebase          # scoped = full, then record the new base
 ```
 
-Resolve conflicts in `private-build-plans.toml` by keeping both lines; separate glyph
-tasks touch separate variant keys.
+Conflicts in `private-build-plans.toml` between glyph tasks are usually separate
+variant keys: keep both lines.
