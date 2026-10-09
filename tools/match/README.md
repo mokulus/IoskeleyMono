@@ -81,6 +81,7 @@ drop more than `--tol` (default 0.003). Without `--target`, the total must impro
 | `match show --ws NAME --glyphs 'ab' --out DIR` | large overlay PNGs: black both, red reference only, blue candidate only |
 | `match sheet --ws NAME --out FILE.png` | contact sheet of every glyph with its score |
 | `match measure --ws NAME` | heights, stems, side bearings vs reference |
+| `match parts --ws NAME --glyphs '≤±'` | bounding box of each contour, reference vs candidate: shows which part is off and by how much, so parameters can be aimed instead of grid-searched |
 | `match score --ws NAME --top 20` | worst glyphs first |
 | `match sweep [--keys a,g]` | rank every option of Iosevka's variant primes in parallel worker copies (~10 min for all); writes `runs/<ws>/sweep/*.json`. Review winners' overlays before adopting any; `--apply` (workspace only) keeps winners blindly |
 | `match coupling` | group reference glyphs by the glyph blocks that draw them: work units, mark blocks, shared library blocks |

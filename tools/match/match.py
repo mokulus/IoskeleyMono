@@ -443,6 +443,36 @@ def _measure(font: Font) -> dict:
     return m
 
 
+def contour_boxes(font: Font, ch: str) -> list[list[int]]:
+    """Bounding box of each contour (components decomposed), sorted left-to-right, bottom-up."""
+    from fontTools.pens.recordingPen import DecomposingRecordingPen
+
+    pen = DecomposingRecordingPen(font.gs)
+    font.gs[font.cmap[ord(ch)]].draw(pen)
+    boxes, cur = [], []
+    for op, pts in pen.value:
+        if op == "moveTo":
+            cur = [pts[0]]
+        elif op in ("lineTo", "curveTo", "qCurveTo"):
+            cur.extend(pts)
+        elif op in ("closePath", "endPath") and cur:
+            xs, ys = [p[0] for p in cur], [p[1] for p in cur]
+            boxes.append([round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))])
+            cur = []
+    return sorted(boxes, key=lambda b: (b[0], b[1]))
+
+
+def cmd_parts(args) -> None:
+    """Per-contour bounding boxes, reference vs candidate: shows which part is off and by how much."""
+    ref = Font(REF_DIR / f"TX02-{args.style}.otf")
+    cand = Font(candidate_path(args))
+    for ch in glyph_set(args.glyphs, ref):
+        if not cand.has(ch):
+            continue
+        print(f"{ch!r}  reference {contour_boxes(ref, ch)}")
+        print(f"{' ' * len(repr(ch))}  candidate {contour_boxes(cand, ch)}")
+
+
 def cmd_measure(args) -> None:
     ref = _measure(Font(REF_DIR / f"TX02-{args.style}.otf"))
     cand = _measure(Font(candidate_path(args)))
@@ -1134,6 +1164,10 @@ def main() -> None:
     sp = sub.add_parser("measure", help="vertical metrics, stems and side bearings")
     cand_args(sp)
     sp.set_defaults(func=cmd_measure)
+
+    sp = sub.add_parser("parts", help="per-contour bounding boxes, reference vs candidate")
+    cand_args(sp)
+    sp.set_defaults(func=cmd_parts)
 
     sp = sub.add_parser("try", help="evaluate glyph-code alternatives in parallel worker copies")
     sp.add_argument("--ws", required=True)
