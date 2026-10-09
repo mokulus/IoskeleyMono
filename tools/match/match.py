@@ -663,50 +663,195 @@ def set_variant(path: Path, key: str, value: str | None, section: str = "design"
     path.write_text("\n".join(lines))
 
 
+def _evaluate_variant(wid: str, plan_text: str, key: str, option: str, section: str, style: str,
+                      chars: str, full: bool) -> dict:
+    """Build one variant option in a worker and score the affected glyphs (own process)."""
+    global FULL
+    FULL = full
+    plan = _plan_file(wid)
+    plan.write_text(plan_text)
+    set_variant(plan, key, option, section)
+    try:
+        build(wid, [style], quiet=True)
+    except SystemExit as e:
+        return {"option": option, "error": str(e)[-300:]}
+    res = score_font(style, _font_file(wid, style), chars)
+    return {"option": option, "mean": res["summary"]["mean_score"],
+            "glyphs": {c: g["score"] for c, g in res["glyphs"].items()}}
+
+
 def cmd_sweep(args) -> None:
-    """Try every option of each variant prime; rank by the mean score of the characters it affects."""
+    """Try every option of each variant prime in parallel worker copies; rank options by the
+    mean score of the characters they affect (the prime's own characters and their accented
+    forms). Writes runs/<ws>/sweep/<key>.json; with --apply, keeps the best option."""
+    import unicodedata
+    from concurrent.futures import ProcessPoolExecutor
+
+    if args.apply and not args.ws:
+        sys.exit("--apply edits the plan: run it in a workspace (--ws), not the main checkout")
     plan = _plan_file(args.ws)
+    original = plan.read_text()
     style = args.style
     ref = Font(REF_DIR / f"TX02-{style}.otf")
+    ref_chars = glyph_set("all", ref)
     primes = {p["key"]: p for p in _primes(args.ws)}
-    keys = args.keys.split(",") if args.keys else [k for k, p in primes.items() if any(ref.has(c) for c in p["hotChars"])]
-    if args.shard:
-        # Balance shards by option count (largest first into the lightest shard); deterministic.
-        i, n = map(int, args.shard.split("/"))
-        loads, owner = [0] * n, {}
-        for k in sorted(keys, key=lambda k: (-len(primes[k]["variants"]), k)):
-            s = loads.index(min(loads))
-            owner[k] = s
-            loads[s] += len(primes[k]["variants"])
-        keys = [k for k in keys if owner[k] == i]
-    for key in keys:
-        prime = primes[key]
-        chars = "".join(c for c in prime["hotChars"] if ref.has(c))
-        current = get_variant(plan, key, args.section)
-        rows = []
-        for option in prime["variants"]:
-            set_variant(plan, key, option, args.section)
-            try:
-                build(args.ws, [style], quiet=True)
-            except SystemExit as e:
-                print(f"{key}={option}: build failed: {str(e)[-300:]}")
-                continue
-            res = score_font(style, _font_file(args.ws, style), chars)
-            rows.append({"option": option, "mean": res["summary"]["mean_score"],
-                         "glyphs": {c: g["score"] for c, g in res["glyphs"].items()}})
-            print(f"{key}={option}: {res['summary']['mean_score']:.4f}", flush=True)
-        rows.sort(key=lambda r: -r["mean"])
-        cur = next((r for r in rows if r["option"] == current), None)
-        best = rows[0]
-        chosen = current
-        if args.apply and best["option"] != current and (cur is None or best["mean"] > cur["mean"] + args.min_gain):
-            chosen = best["option"]
-        set_variant(plan, key, chosen, args.section)
-        _write_json(_runs(args.ws) / "sweep" / f"{key}.json",
-                    {"key": key, "chars": chars, "current": current, "chosen": chosen, "ranking": rows})
-        print(f"== {key} [{chars}] current={current} ({cur['mean'] if cur else 'n/a'}) "
-              f"best={best['option']} ({best['mean']:.4f}) chosen={chosen}", flush=True)
+
+    def affected(prime) -> str:
+        hot = set(prime["hotChars"])
+        return "".join(c for c in ref_chars if c in hot or unicodedata.normalize("NFD", c)[0] in hot)
+
+    keys = args.keys.split(",") if args.keys else [k for k, p in primes.items() if affected(p)]
+    workers = [_sync_worker(args.ws, i) for i in range(args.jobs)]
+    summary = []
+    with ProcessPoolExecutor(args.jobs) as pool:
+        for key in keys:
+            prime, chars = primes[key], affected(primes[key])
+            current = get_variant(plan, key, args.section)
+            options = prime["variants"]
+            rows = []
+            for start in range(0, len(options), args.jobs):
+                wave = options[start:start + args.jobs]
+                rows += [f.result() for f in [
+                    pool.submit(_evaluate_variant, wid, original, key, opt, args.section, style, chars, FULL)
+                    for wid, opt in zip(workers, wave)]]
+            failed = [r for r in rows if "error" in r]
+            rows = sorted((r for r in rows if "error" not in r), key=lambda r: -r["mean"])
+            cur = next((r for r in rows if r["option"] == current), None)
+            best = rows[0]
+            gain = best["mean"] - (cur["mean"] if cur else 0)
+            _write_json(_runs(args.ws) / "sweep" / f"{key}.json",
+                        {"key": key, "chars": chars, "current": current, "ranking": rows, "failed": failed})
+            summary.append((gain, key, chars, current, best["option"], cur["mean"] if cur else None, best["mean"]))
+            print(f"{key:<28} [{chars[:12]}{'…' if len(chars) > 12 else ''}] {current} "
+                  f"({cur['mean'] if cur else 'n/a'}) -> best {best['option']} ({best['mean']:.4f})"
+                  + (f"  {len(failed)} failed" if failed else ""), flush=True)
+            if args.apply and best["option"] != current and gain > args.min_gain:
+                set_variant(plan, key, best["option"], args.section)
+                original = plan.read_text()
+    _write_json(_runs(args.ws) / "sweep" / "summary.json",
+                [dict(zip(("gain", "key", "chars", "current", "best", "current_mean", "best_mean"), s))
+                 for s in sorted(summary, reverse=True)])
     build(args.ws, [style], quiet=True)
+
+
+# ---------------------------------------------------------------- coupling map
+
+
+def _block_imports(ios: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """glyph-block -> blocks it imports, and glyph-block -> source file, parsed from PTL."""
+    import re
+
+    src = ios / "packages" / "font-glyphs" / "src"
+    imports: dict[str, set[str]] = {}
+    where: dict[str, str] = {}
+    for f in sorted(src.rglob("*.ptl")):
+        cur = None
+        for line in f.read_text().splitlines():
+            if m := re.match(r"glyph-block\s+([\w-]+)\s*:", line):
+                cur = m.group(1)
+                where[cur] = str(f.relative_to(src))
+                imports.setdefault(cur, set())
+            elif (m := re.match(r"\s+glyph-block-import\s+([\w-]+)", line)) and cur:
+                imports[cur].add(m.group(1))
+    return imports, where
+
+
+def cmd_coupling(args) -> None:
+    """Group reference glyphs by the Iosevka glyph blocks that draw them.
+
+    Owner blocks draw specific glyphs; editing one moves only the glyphs that depend on it.
+    Library blocks (imported by at least --lib-min other blocks) are shared code: editing
+    them is a global change. Mark blocks place accents on many letters. Owner blocks that
+    jointly build one glyph (for example a ligature) are merged into one work unit."""
+    build(args.ws, [args.style], quiet=True)
+    ios = _ws_root(args.ws) / "Iosevka"
+    scope = json.loads((ios / ".build" / "TTF-Scoped" / PLAN / f"{PLAN}-{args.style}.scope.json").read_text())
+    deps = {chr(int(u)): set(bs) for u, bs in scope["blocksByCodepoint"].items()}
+    base = _runs(args.ws) / "base" / f"{args.style}.json"
+    scores = {ch: g["score"] for ch, g in json.loads(base.read_text())["glyphs"].items()} if base.exists() else {}
+    chars = [ch for ch in scores if ch in deps]
+    imports, where = _block_imports(ios)
+    importers: dict[str, int] = {}
+    for bs in imports.values():
+        for b in bs:
+            importers[b] = importers.get(b, 0) + 1
+    library = {b for b, n in importers.items() if n >= args.lib_min}
+
+    def kind(b: str) -> str:
+        if b in library:
+            return "library"
+        if b.startswith("Mark-"):
+            return "mark"
+        if b.lower().startswith("autobuild-"):
+            return "composer"
+        return "owner"
+
+    # Union owner blocks that build the same glyph.
+    parent: dict[str, str] = {}
+
+    def find(b: str) -> str:
+        while parent.setdefault(b, b) != b:
+            parent[b] = parent[parent[b]]
+            b = parent[b]
+        return b
+
+    owners_of = {ch: sorted(b for b in deps[ch] if kind(b) == "owner") for ch in chars}
+    for owners in owners_of.values():
+        for b in owners[1:]:
+            parent[find(b)] = find(owners[0])
+    units: dict[str, dict] = {}
+    for ch in chars:
+        owners = owners_of[ch]
+        key = find(owners[0]) if owners else "(marks/composer only)"
+        u = units.setdefault(key, {"blocks": set(), "base": [], "composed": []})
+        u["blocks"].update(owners)
+        (u["composed"] if any(kind(b) == "mark" for b in deps[ch]) else u["base"]).append(ch)
+
+    def closure(bs: set[str]) -> set[str]:
+        seen, todo = set(), list(bs)
+        while todo:
+            b = todo.pop()
+            if b not in seen:
+                seen.add(b)
+                todo += imports.get(b, ())
+        return seen
+
+    rows = []
+    for u in units.values():
+        members = u["base"] + u["composed"]
+        rows.append({
+            "blocks": sorted(u["blocks"]),
+            "files": sorted({where.get(b, "?") for b in u["blocks"]}),
+            "base": "".join(u["base"]),
+            "composed": "".join(u["composed"]),
+            "mean": round(float(np.mean([scores[c] for c in members])), 3),
+            "gain": round(sum(1 - scores[c] for c in members), 2),
+            "libraries": sorted(b for b in closure(u["blocks"]) if b in library),
+        })
+    rows.sort(key=lambda r: -r["gain"])
+    marks = {}
+    for ch in chars:
+        for b in deps[ch]:
+            if kind(b) == "mark":
+                marks.setdefault(b, []).append(ch)
+    libs = {}
+    for ch in chars:
+        for b in closure(deps[ch]) & library:
+            libs.setdefault(b, []).append(ch)
+    _write_json(_runs(args.ws) / "coupling.json", {"units": rows, "marks": {b: "".join(cs) for b, cs in marks.items()},
+                                                 "libraries": {b: len(cs) for b, cs in libs.items()}})
+    print(f"{len(chars)} glyphs, {len(rows)} work units, {len(marks)} mark blocks, {len(libs)} library blocks in use\n")
+    print(f"{'gain':>5} {'mean':>5}  {'unit (owner blocks)':<44} glyphs")
+    for r in rows:
+        blocks = ", ".join(r["blocks"]) or "(marks/composer only)"
+        comp = f" + {len(r['composed'])} accented" if r["composed"] else ""
+        print(f"{r['gain']:5.2f} {r['mean']:5.3f}  {blocks[:44]:<44} {r['base']}{comp}")
+    print("\nmark blocks (accents placed on letters):")
+    for b, cs in sorted(marks.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {b:<28} {len(cs):3} glyphs  mean {np.mean([scores[c] for c in cs]):.3f}")
+    print("\nlibrary blocks (shared code, editing them is global):")
+    for b, cs in sorted(libs.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {b:<28} {len(cs):3} glyphs")
 
 
 # ---------------------------------------------------------------- global parameter tuning
@@ -771,11 +916,20 @@ def _sync_worker(ws: str | None, i: int) -> str:
                     shutil.rmtree(meta)
                 elif meta.exists() or meta.is_symlink():
                     meta.unlink()
+        _link_worker_plan(dst)
         return wid
     for repo in ("Iosevka", "IoskeleyMono"):
         excludes = [f"--exclude=/{d}" for d in (".jj", ".git", "dist", ".build", "node_modules")]
         subprocess.run(["rsync", "-a", "--delete", *excludes, f"{src / repo}/", f"{dst / repo}/"], check=True)
+    _link_worker_plan(dst)
     return wid
+
+
+def _link_worker_plan(dst: Path) -> None:
+    """The worker must build its own plan copy, whatever kind of link the source has."""
+    link = dst / "Iosevka" / "private-build-plans.toml"
+    link.unlink(missing_ok=True)
+    link.symlink_to("../IoskeleyMono/private-build-plans.toml")
 
 
 def _evaluate(wid: str, plan_text: str, field: str, value: str, styles: list[str], spec: str, full: bool):
@@ -871,14 +1025,14 @@ def main() -> None:
     sp.add_argument("--styles", nargs="+", default=DEFAULT_STYLES)
     sp.set_defaults(func=cmd_verify)
 
-    sp = sub.add_parser("sweep", help="try every option of variant primes")
-    sp.add_argument("--ws", required=True, help="never sweep in the main checkout")
+    sp = sub.add_parser("sweep", help="rank every option of variant primes (parallel worker copies)")
+    sp.add_argument("--ws", help="source workspace (default: main checkout; --apply needs a workspace)")
     sp.add_argument("--keys", help="comma-separated prime keys (default: all touching the reference set)")
     sp.add_argument("--style", default="Regular", choices=STYLES)
     sp.add_argument("--section", default="design", help="variants section: design, upright, italic")
     sp.add_argument("--apply", action="store_true", help="keep the best option when it beats the current one")
     sp.add_argument("--min-gain", type=float, default=0.002)
-    sp.add_argument("--shard", help="I/N: sweep only shard I (0-based) of N, balanced by option count")
+    sp.add_argument("--jobs", type=int, default=8, help="options built in parallel")
     sp.set_defaults(func=cmd_sweep)
 
     sp = sub.add_parser("score", help="score glyphs against the reference")
@@ -913,6 +1067,12 @@ def main() -> None:
     sp = sub.add_parser("measure", help="vertical metrics, stems and side bearings")
     cand_args(sp)
     sp.set_defaults(func=cmd_measure)
+
+    sp = sub.add_parser("coupling", help="group reference glyphs by the Iosevka glyph blocks that draw them")
+    sp.add_argument("--ws")
+    sp.add_argument("--style", default="Regular", choices=STYLES)
+    sp.add_argument("--lib-min", type=int, default=5, help="blocks imported by this many others count as library")
+    sp.set_defaults(func=cmd_coupling)
 
     sp = sub.add_parser("ws-new", help="create per-agent workspaces wt/<name>")
     sp.add_argument("name")
